@@ -1,6 +1,6 @@
-# Versão do config_minima que coleta métricas via SSH sem criar arquivos no host
+# Script para testar todas as combinações de CPU/RAM do backend (mantendo o banco fixo) coletando métricas via SSH inline
 # Requer: paramiko (pip install paramiko)
-# Uso: python3 scripts/config_minima_ssh_inline.py --app_url <URL_DA_APP> --stacks node-postgres,java-postgres,node-mysql --k6_script tests/consulta_intensiva.js --ssh_host 143.198.78.77 --ssh_user <usuario> --ssh_key <caminho_chave>
+# Uso: python3 scripts/config_fixed_backend_ssh.py --app_url <URL_DA_APP> --stacks node-postgres,java-postgres --k6_script tests/consulta_intensiva.js --repeticoes 3 --ssh_config ssh_config.json
 
 import os
 import sys
@@ -10,7 +10,6 @@ import argparse
 from statistics import mean
 from datetime import datetime, timezone, timedelta
 import paramiko
-import json as jsonlib
 import threading
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -53,7 +52,6 @@ class SSHMetrics:
         self._samples = []
         def collect():
             while self._collecting:
-                # Host CPU
                 stdin, stdout, stderr = self.ssh.exec_command("top -bn1 | grep 'Cpu(s)'")
                 cpu_info = stdout.read().decode()
                 cpu_val = None
@@ -62,7 +60,6 @@ class SSHMetrics:
                         cpu_val = float(cpu_info.split()[1].replace(',', '.'))
                     except Exception:
                         pass
-                # Host MEM
                 stdin, stdout, stderr = self.ssh.exec_command("free -m | grep Mem")
                 mem_info = stdout.read().decode()
                 mem_val = None
@@ -71,7 +68,6 @@ class SSHMetrics:
                         mem_val = int(mem_info.split()[2])
                     except Exception:
                         pass
-                # Containers
                 stdin, stdout, stderr = self.ssh.exec_command(f"docker stats --no-stream --format '{{{{.Name}}}},{{{{.CPUPerc}}}},{{{{.MemUsage}}}}' | grep '{backend_name}\\|{db_name}'")
                 docker_stats = stdout.read().decode().strip().split('\n')
                 backend_cpu = backend_mem = db_cpu = db_mem = None
@@ -107,7 +103,6 @@ class SSHMetrics:
     def stop_parallel_collection(self):
         self._collecting = False
         self._thread.join()
-        # Calcula médias
         def avg(lst):
             vals = [v for v in lst if v is not None]
             return sum(vals)/len(vals) if vals else None
@@ -135,10 +130,10 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes, s
         cenario = {
             "nome": nome,
             "backend": stack,
-            "backend_cpu": CPU_MIN,  # Mantém fixo
-            "backend_ram": RAM_MIN,  # Mantém fixo
-            "db_cpu": cpu,
-            "db_ram": ram,
+            "backend_cpu": cpu,
+            "backend_ram": ram,
+            "db_cpu": CPU_MIN,  # Mantém fixo
+            "db_ram": RAM_MIN,  # Mantém fixo
             "k6_script": k6_script
         }
         inicio = datetime.now(TZ)
@@ -176,7 +171,6 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes, s
                 except Exception:
                     pass
                 continue
-            # Coleta métricas via SSH em paralelo ao teste
             prefix = container_info.get('id')
             backend_name = f"{prefix}-backend-1"
             database_name = f"{prefix}-database-1"
@@ -189,17 +183,14 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes, s
                 executar_k6(k6_script, output_path, base_url=base_url, metrics_path=metrics_path)
             except Exception as e:
                 erro_k6 = str(e)
-            # Para coleta paralela e obtém métricas do período do teste
             metrics_during = ssh_metrics.stop_parallel_collection()
             fim = datetime.now(TZ)
             duracao = (fim - inicio).total_seconds()
-            # Carrega métricas do K6 se existirem
             try:
                 with open(metrics_path) as f:
                     k6_metrics_summary = json.load(f)
             except Exception:
                 k6_metrics_summary = None
-            # Monta o dicionário final de métricas
             metrics = {
                 "k6_summary": k6_metrics_summary,
                 "container_info": container_info,
@@ -246,6 +237,7 @@ def testar_todas_combinacoes(stack, k6_script, page, app_url, repeticoes, ssh_me
         cpu = round(cpu + CPU_INC, 2)
 
 def main():
+    import json as jsonlib
     parser = argparse.ArgumentParser()
     parser.add_argument('--app_url', required=True, help='URL pública da aplicação React')
     parser.add_argument('--stacks', required=True, help='Lista de stacks separadas por vírgula')

@@ -1,5 +1,5 @@
-# Script para testar todas as combinações de CPU/RAM sem alterar o backend e sem parar nos thresholds
-# Uso: python3 scripts/config_minima_fixed_backend.py --app_url <URL_DA_APP> --stacks node-postgres,java-postgres,node-mysql --k6_script tests/consulta_intensiva.js
+# Script para testar todas as combinações de CPU/RAM do backend (mantendo o banco fixo) coletando métricas via Prometheus
+# Uso: python3 scripts/config_fixed_backend_prometheus.py --app_url <URL_DA_APP> --stacks node-postgres,java-postgres --k6_script tests/consulta_intensiva.js --repeticoes 3
 
 import os
 import sys
@@ -9,7 +9,6 @@ import argparse
 from statistics import mean
 from datetime import datetime, timezone, timedelta
 import requests
-import re
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -18,7 +17,6 @@ from main import (
     extrair_url_container, executar_k6, excluir_container_ate_sucesso, extrair_info_container
 )
 
-# Parâmetros globais de limites e incrementos
 CPU_MIN = 0.5
 RAM_MIN = 1024
 CPU_INC = 0.1
@@ -58,18 +56,6 @@ def consultar_media_prometheus_nome(prom_url, container_name, inicio, fim):
     print(f"[Prometheus] Query name: {container_name} | Mem: {mem_val} | CPU: {cpu_val}")
     return {'mem_avg_bytes': mem_val, 'cpu_avg_cores': cpu_val, 'name_used': container_name}
 
-def extrair_thresholds_k6(k6_script_path):
-    with open(k6_script_path, 'r') as f:
-        content = f.read()
-    thresholds = {}
-    m = re.search(r"http_req_failed\s*:\s*\[\s*'rate<([0-9.]+)'", content)
-    if m:
-        thresholds['http_req_failed'] = float(m.group(1))
-    m = re.search(r"http_req_duration\s*:\s*\[\s*'p\\(95\\)<([0-9.]+)'", content)
-    if m:
-        thresholds['http_req_duration_p95'] = float(m.group(1))
-    return thresholds
-
 def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
     resultados = []
     nome_teste = os.path.splitext(os.path.basename(k6_script))[0]
@@ -78,10 +64,10 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
         cenario = {
             "nome": nome,
             "backend": stack,
-            "backend_cpu": CPU_MIN,  # Mantém fixo
-            "backend_ram": RAM_MIN,  # Mantém fixo
-            "db_cpu": cpu,
-            "db_ram": ram,
+            "backend_cpu": cpu,
+            "backend_ram": ram,
+            "db_cpu": CPU_MIN,  # Mantém fixo
+            "db_ram": RAM_MIN,  # Mantém fixo
             "k6_script": k6_script
         }
         inicio = datetime.now(TZ)
@@ -119,6 +105,9 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
                 except Exception:
                     pass
                 continue
+            prefix = container_info.get('id')
+            backend_name = f"{prefix}-backend-1"
+            database_name = f"{prefix}-database-1"
             output_path = f"resultados/{nome}.json"
             metrics_path = f"resultados/{nome}_metrics.json"
             erro_k6 = None
@@ -127,11 +116,6 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
                 executar_k6(k6_script, output_path, base_url=base_url, metrics_path=metrics_path)
             except Exception as e:
                 erro_k6 = str(e)
-            try:
-                with open(metrics_path) as f:
-                    k6_metrics_summary = json.load(f)
-            except Exception:
-                k6_metrics_summary = None
             fim = datetime.now(TZ)
             duracao = (fim - inicio).total_seconds()
             config = carregar_config()
@@ -139,17 +123,14 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
             prom_metrics_backend = None
             prom_metrics_database = None
             if prom_url and container_info and container_info.get('id'):
-                prefix = container_info.get('id')
-                backend_name = f"{prefix}-backend-1"
-                database_name = f"{prefix}-database-1"
                 time.sleep(35)
                 prom_metrics_backend = consultar_media_prometheus_nome(prom_url, backend_name, inicio, fim)
                 prom_metrics_database = consultar_media_prometheus_nome(prom_url, database_name, inicio, fim)
             try:
                 with open(metrics_path) as f:
-                    metrics = json.load(f)
+                    k6_metrics_summary = json.load(f)
             except Exception:
-                metrics = {}
+                k6_metrics_summary = None
             metrics = {
                 "k6_summary": k6_metrics_summary,
                 "container_info": container_info,
@@ -164,11 +145,7 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
                 metrics["erro"] = erro_k6
             with open(metrics_path, 'w') as f:
                 json.dump(metrics, f, indent=4, ensure_ascii=False)
-            m = k6_metrics_summary if isinstance(k6_metrics_summary, dict) else {}
-            http_req_failed = None
-            if "metrics" in m and isinstance(m["metrics"], dict):
-                http_req_failed = m["metrics"].get("http_req_failed", {}).get("value", None)
-            resultados.append(http_req_failed)
+            resultados.append(None)
         except Exception as e:
             fim = datetime.now(TZ)
             duracao = (fim - inicio).total_seconds()
@@ -192,7 +169,6 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes):
     return resultados
 
 def testar_todas_combinacoes(stack, k6_script, page, app_url, repeticoes):
-    nome_teste = os.path.splitext(os.path.basename(k6_script))[0]
     cpu = CPU_MIN
     while cpu <= CPU_MAX + 1e-6:
         ram = RAM_MIN
