@@ -1,28 +1,27 @@
 #!/bin/bash
-# Script para executar uma stack de testes Python + K6 em sequência
-# Configure as variáveis abaixo conforme necessário e execute: ./run_stack_k6.sh
+# Script para executar múltiplos scripts Python variando o teste K6 passado como argumento
+# Configure a variável TESTES_K6 para definir quais scripts de teste executar
 
 set -e
 
 # === CONFIGURAÇÃO INÍCIO ===
-PY_SCRIPT="scripts/config_minima.py"   # Caminho do script Python
-STACK_K6=( \
-    "get_users_50vus.js" \
-    "post_users_50vus.js" \
-    "put_users_50vus.js" \
-) # Lista de scripts K6 (adicione/remova conforme necessário)
-REPS=3                                 # Número de repetições da stack
-PY_ARGS=""                            # Argumentos extras para o script Python (opcional)
+PY_SCRIPT="scripts/config_minima.py"   # Script Python a ser executado
+APP_URL="http://localhost:3000"        # URL da aplicação
+STACKS="node-postgres"                 # Stacks a testar
+PASTA_K6="tests k6"                    # Pasta correta dos scripts K6
+# Lista de scripts de teste K6 a serem usados
+TESTES_K6=(
+    "get_users_50vus.js"
+    "post_users_50vus.js"
+    "put_users_50vus.js"
+)
 # === CONFIGURAÇÃO FIM ===
 
-for i in $(seq 1 $REPS); do
-    echo "[STACK] Execução $i/$REPS do script Python: $PY_SCRIPT $PY_ARGS"
-    python "$PY_SCRIPT" $PY_ARGS
-    for k6file in "${STACK_K6[@]}"; do
-        echo "[STACK] Execução do teste K6: $k6file"
-        k6 run "tests k6/$k6file"
-    done
-    echo "[STACK] Fim da iteração $i"
+for TESTE_K6 in "${TESTES_K6[@]}"; do
+    CMD="python $PY_SCRIPT --app_url $APP_URL --stacks $STACKS --k6_script \"$PASTA_K6/$TESTE_K6\" --repeticoes 5"
+    echo "[STACK] Executando: $CMD"
+    eval $CMD
+    echo "[STACK] Fim do comando: $CMD"
 done
 
 echo "[STACK] Execução completa."
