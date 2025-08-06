@@ -10,6 +10,7 @@ import argparse
 from statistics import mean
 from datetime import datetime, timezone, timedelta
 import paramiko
+import json as jsonlib
 import threading
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -28,16 +29,20 @@ RAM_MAX = 1024
 TZ = timezone(timedelta(hours=-3))  # UTC-3
 
 class SSHMetrics:
-    def __init__(self, host, user, key_path):
+    def __init__(self, host, user, key_path=None, password=None):
         self.host = host
         self.user = user
         self.key_path = key_path
+        self.password = password
         self.ssh = None
 
     def connect(self):
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.ssh.connect(self.host, username=self.user, key_filename=self.key_path)
+        if self.password:
+            self.ssh.connect(self.host, username=self.user, password=self.password)
+        else:
+            self.ssh.connect(self.host, username=self.user, key_filename=self.key_path)
 
     def close(self):
         if self.ssh:
@@ -246,14 +251,20 @@ def main():
     parser.add_argument('--stacks', required=True, help='Lista de stacks separadas por vírgula')
     parser.add_argument('--k6_script', required=True, help='Caminho do script K6')
     parser.add_argument('--repeticoes', type=int, default=5, help='Quantidade de repetições por configuração')
-    parser.add_argument('--ssh_host', required=True, help='Host SSH para monitoramento')
-    parser.add_argument('--ssh_user', required=True, help='Usuário SSH')
-    parser.add_argument('--ssh_key', required=True, help='Caminho da chave SSH privada')
+    parser.add_argument('--ssh_config', default='ssh_config.json', help='Arquivo JSON com dados de conexão SSH')
     args = parser.parse_args()
     stacks = [s.strip() for s in args.stacks.split(',')]
 
+    # Lê config SSH do arquivo
+    with open(args.ssh_config, 'r') as f:
+        ssh_conf = jsonlib.load(f)
+    ssh_host = ssh_conf.get('ssh_host')
+    ssh_user = ssh_conf.get('ssh_user')
+    ssh_key = ssh_conf.get('ssh_key')
+    ssh_password = ssh_conf.get('ssh_password')
+
     from playwright.sync_api import sync_playwright
-    ssh_metrics = SSHMetrics(args.ssh_host, args.ssh_user, args.ssh_key)
+    ssh_metrics = SSHMetrics(ssh_host, ssh_user, key_path=ssh_key, password=ssh_password)
     ssh_metrics.connect()
     with sync_playwright() as playwright:
         browser = iniciar_navegador(playwright)
