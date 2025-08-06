@@ -10,18 +10,29 @@ Este projeto automatiza testes de performance em stacks Docker, coletando métri
 ├── docs/                   # Documentação do projeto
 ├── config.json             # Configurações gerais
 ├── ssh_config_example.json # Exemplo de configuração SSH
+├── run_stack_k6.sh         # Script para execução automatizada de stack de testes
 ├── README.md               # Instruções rápidas
 ```
 
-
-## Principais Scripts
 
 ## Principais Scripts
 - `main.py`: Funções utilitárias para orquestração dos testes, criação/remoção de containers, execução do K6, extração de métricas e controle do fluxo dos experimentos. Usado como módulo auxiliar.
 - `config_minima.py`: ÚNICO script que pode variar recursos do banco e backend. Usa Prometheus para coletar métricas detalhadas dos containers.
 - `config_fixed_backend_prometheus.py`: Varia apenas recursos do backend, mantendo o banco fixo. Coleta métricas via Prometheus.
 - `config_fixed_backend_ssh.py`: Varia apenas recursos do backend, mantendo o banco fixo. Coleta métricas via SSH inline, lendo credenciais do arquivo JSON.
+- `run_stack_k6.sh`: Executa automaticamente um script Python e uma sequência de scripts K6, repetindo o ciclo conforme configuração interna. Não requer argumentos na linha de comando; basta editar as variáveis no início do arquivo para definir o fluxo desejado.
 
+## Como usar o run_stack_k6.sh
+1. Edite o arquivo `run_stack_k6.sh` e configure as variáveis no início do script:
+   - `PY_SCRIPT`: Caminho do script Python a ser executado
+   - `STACK_K6`: Lista dos scripts K6 a serem executados em sequência
+   - `REPS`: Número de repetições do ciclo
+   - `PY_ARGS`: Argumentos extras para o Python (opcional)
+2. Execute:
+   ```sh
+   ./run_stack_k6.sh
+   ```
+   O script irá executar o Python e os K6s na ordem definida, repetindo conforme configurado.
 
 ## Como configurar o acesso SSH
   "ssh_password": "sua_senha"
