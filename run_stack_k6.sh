@@ -5,20 +5,18 @@
 set -e
 
 # === CONFIGURAÇÃO INÍCIO ===
-PY_SCRIPT="scripts/config_minima.py"   # Script Python a ser executado
-APP_URL="http://localhost:3000"        # URL da aplicação
+PY_SCRIPT="scripts/config_fixed_backend_ssh.py"   # Script Python a ser executado
+APP_URL="http://143.198.78.77"        # URL da aplicação
 STACKS="node-postgres"                 # Stacks a testar
 PASTA_K6="tests k6"                    # Pasta correta dos scripts K6
 # Lista de scripts de teste K6 a serem usados
 TESTES_K6=(
     "get_users_50vus.js"
-    "post_users_50vus.js"
-    "put_users_50vus.js"
 )
 # === CONFIGURAÇÃO FIM ===
 
 for TESTE_K6 in "${TESTES_K6[@]}"; do
-    CMD="python $PY_SCRIPT --app_url $APP_URL --stacks $STACKS --k6_script \"$PASTA_K6/$TESTE_K6\" --repeticoes 5"
+    CMD="python $PY_SCRIPT --app_url $APP_URL --stacks $STACKS --k6_script \"$PASTA_K6/$TESTE_K6\" --repeticoes 1"
     echo "[STACK] Executando: $CMD"
     eval $CMD
     echo "[STACK] Fim do comando: $CMD"
