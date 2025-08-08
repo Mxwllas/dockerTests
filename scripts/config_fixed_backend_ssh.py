@@ -11,6 +11,7 @@ from statistics import mean
 from datetime import datetime, timezone, timedelta
 import paramiko
 import threading
+import re
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -19,12 +20,12 @@ from main import (
     extrair_url_container, executar_k6, excluir_container_ate_sucesso, extrair_info_container
 )
 
-CPU_MIN = 0.5
+CPU_MIN = 1
 RAM_MIN = 1024
-CPU_INC = 0.1
-RAM_INC = 128
-CPU_MAX = 1
-RAM_MAX = 1024
+CPU_INC = 1
+RAM_INC = 1024
+CPU_MAX = 2
+RAM_MAX = 2048
 TZ = timezone(timedelta(hours=-3))  # UTC-3
 
 class SSHMetrics:
@@ -50,36 +51,62 @@ class SSHMetrics:
     def start_parallel_collection(self, backend_name, db_name, interval=2):
         self._collecting = True
         self._samples = []
+        import re
         def collect():
             while self._collecting:
-                stdin, stdout, stderr = self.ssh.exec_command("top -bn1 | grep 'Cpu(s)'")
+                # Coleta CPU do host (robusto, uso real = 100 - idle)
+                stdin, stdout, stderr = self.ssh.exec_command("LANG=C top -bn1 | grep 'Cpu(s)'")
                 cpu_info = stdout.read().decode()
                 cpu_val = None
                 if cpu_info:
-                    try:
-                        cpu_val = float(cpu_info.split()[1].replace(',', '.'))
-                    except Exception:
-                        pass
+                    # Regex robusto: captura apenas números válidos (ex: 99.0, 99, 99,0)
+                    match = re.search(r'(\d+[\.,]?\d*)\s*id', cpu_info)
+                    if match:
+                        idle_str = match.group(1).replace(',', '.')
+                        try:
+                            # Garante que só converte se for número válido
+                            if re.fullmatch(r'\d+(\.\d+)?', idle_str):
+                                idle = float(idle_str)
+                                cpu_val = 100.0 - idle
+                            else:
+                                print(f"[WARN] Valor de idle inválido capturado: '{idle_str}' na saída: {cpu_info.strip()}")
+                        except Exception as e:
+                            print(f"[ERROR] Falha ao converter idle para float: '{idle_str}' na saída: {cpu_info.strip()} - {e}")
+                # Só registra amostra se parsing foi bem-sucedido
+                if cpu_val is None:
+                    time.sleep(interval)
+                    continue
+                # Coleta memória do host (alinhado ao htop: total - available)
                 stdin, stdout, stderr = self.ssh.exec_command("free -m | grep Mem")
                 mem_info = stdout.read().decode()
                 mem_val = None
                 if mem_info:
                     try:
-                        mem_val = int(mem_info.split()[2])
+                        parts = mem_info.split()
+                        # free -m: total used free shared buff/cache available
+                        total = int(parts[1])
+                        available = int(parts[6])
+                        mem_val = total - available
                     except Exception:
                         pass
+                # Coleta docker stats
                 stdin, stdout, stderr = self.ssh.exec_command(f"docker stats --no-stream --format '{{{{.Name}}}},{{{{.CPUPerc}}}},{{{{.MemUsage}}}}' | grep '{backend_name}\\|{db_name}'")
-                docker_stats = stdout.read().decode().strip().split('\n')
+                docker_stats_raw = stdout.read().decode().strip()
+                print(f"[DEBUG] docker stats output: {docker_stats_raw}")
+                docker_stats = docker_stats_raw.split('\n')
                 backend_cpu = backend_mem = db_cpu = db_mem = None
                 for line in docker_stats:
                     parts = line.split(',')
                     if len(parts) >= 3:
                         name = parts[0]
                         cpu = parts[1].replace('%','').replace(',','.')
-                        mem = parts[2].split()[0].replace(',','.')
+                        # Extrai apenas o valor numérico em MiB da string "35.33MiB / 1GiB"
+                        mem_match = re.match(r'([0-9.]+)MiB', parts[2])
+                        mem = None
+                        if mem_match:
+                            mem = float(mem_match.group(1))
                         try:
                             cpu = float(cpu)
-                            mem = float(mem)
                         except Exception:
                             continue
                         if backend_name in name:
@@ -106,20 +133,38 @@ class SSHMetrics:
         def avg(lst):
             vals = [v for v in lst if v is not None]
             return sum(vals)/len(vals) if vals else None
-        host_cpu_avg = avg([s['host_cpu'] for s in self._samples])
-        host_mem_avg = avg([s['host_mem'] for s in self._samples])
-        backend_cpu_avg = avg([s['backend_cpu'] for s in self._samples])
-        backend_mem_avg = avg([s['backend_mem'] for s in self._samples])
-        db_cpu_avg = avg([s['db_cpu'] for s in self._samples])
-        db_mem_avg = avg([s['db_mem'] for s in self._samples])
+        samples = self._samples
+        host_cpu = [s['host_cpu'] for s in samples]
+        host_mem = [s['host_mem'] for s in samples]
+        backend_cpu = [s['backend_cpu'] for s in samples]
+        backend_mem = [s['backend_mem'] for s in samples]
+        db_cpu = [s['db_cpu'] for s in samples]
+        db_mem = [s['db_mem'] for s in samples]
         return {
-            'samples': self._samples,
-            'host_cpu_avg': host_cpu_avg,
-            'host_mem_avg': host_mem_avg,
-            'backend_cpu_avg': backend_cpu_avg,
-            'backend_mem_avg': backend_mem_avg,
-            'db_cpu_avg': db_cpu_avg,
-            'db_mem_avg': db_mem_avg
+            "host": {
+                "cpu": host_cpu,
+                "memoria": host_mem,
+                "media": {
+                    "cpu": avg(host_cpu),
+                    "memoria": avg(host_mem)
+                }
+            },
+            "backend": {
+                "cpu": backend_cpu,
+                "memoria": backend_mem,
+                "media": {
+                    "cpu": avg(backend_cpu),
+                    "memoria": avg(backend_mem)
+                }
+            },
+            "banco_de_dados": {
+                "cpu": db_cpu,
+                "memoria": db_mem,
+                "media": {
+                    "cpu": avg(db_cpu),
+                    "memoria": avg(db_mem)
+                }
+            }
         }
 
 def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes, ssh_metrics):
@@ -183,7 +228,7 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes, s
                 executar_k6(k6_script, output_path, base_url=base_url, metrics_path=metrics_path)
             except Exception as e:
                 erro_k6 = str(e)
-            metrics_during = ssh_metrics.stop_parallel_collection()
+            metrics_json = ssh_metrics.stop_parallel_collection()
             fim = datetime.now(TZ)
             duracao = (fim - inicio).total_seconds()
             try:
@@ -192,13 +237,20 @@ def testar_configuracao(stack, cpu, ram, k6_script, page, app_url, repeticoes, s
             except Exception:
                 k6_metrics_summary = None
             metrics = {
+                "host": metrics_json.get("host", {}),
+                "backend": metrics_json.get("backend", {}),
+                "banco_de_dados": metrics_json.get("banco_de_dados", {}),
+                "media": {
+                    "host": metrics_json.get("host", {}).get("media", {}),
+                    "backend": metrics_json.get("backend", {}).get("media", {}),
+                    "banco_de_dados": metrics_json.get("banco_de_dados", {}).get("media", {})
+                },
                 "k6_summary": k6_metrics_summary,
                 "container_info": container_info,
                 "inicio_teste": inicio.isoformat(sep=' '),
                 "fim_teste": fim.isoformat(sep=' '),
                 "duracao_segundos": duracao,
-                "cenario": cenario,
-                "ssh_metrics_during": metrics_during
+                "cenario": cenario
             }
             if erro_k6:
                 metrics["erro"] = erro_k6
