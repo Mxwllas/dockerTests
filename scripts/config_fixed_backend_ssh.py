@@ -92,7 +92,7 @@ class SSHMetrics:
                 # Coleta docker stats
                 stdin, stdout, stderr = self.ssh.exec_command(f"docker stats --no-stream --format '{{{{.Name}}}},{{{{.CPUPerc}}}},{{{{.MemUsage}}}}' | grep '{backend_name}\\|{db_name}'")
                 docker_stats_raw = stdout.read().decode().strip()
-                print(f"[DEBUG] docker stats output: {docker_stats_raw}")
+                # print(f"[DEBUG] docker stats output: {docker_stats_raw}")
                 docker_stats = docker_stats_raw.split('\n')
                 backend_cpu = backend_mem = db_cpu = db_mem = None
                 for line in docker_stats:
